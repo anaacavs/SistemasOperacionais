@@ -1,178 +1,214 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <time.h>
-#include <pthread.h>
+#define _POSIX_C_SOURCE 200809L
 
-#define NUM_THREADS 16
+#include "bucket_sort_common.h"
+#include <errno.h>
+#include <pthread.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 typedef struct {
-    int id;
-    int inicio;
-    int fim;
-    int *arr;
-    int n_total;
-    struct Node** buckets; 
-} DadosThread;
+    const int *input;
+    size_t count;
+    int minimum;
+    uint64_t range;
+    size_t first_bucket;
+    size_t end_bucket;
+    Node **buckets;
+    int failed;
+} Worker;
 
-// Estrutura para o nó da lista encadeada (balde)
-struct Node {
-    int data;
-    struct Node* next;
-};
-
-// Função para inserir ordenado no balde (Insertion Sort implícito)
-struct Node* insertSorted(struct Node* head, int value) {
-    struct Node* newNode = (struct Node*)malloc(sizeof(struct Node));
-    newNode->data = value;
-    newNode->next = NULL;
-
-    if (head == NULL || head->data >= value) {
-        newNode->next = head;
-        return newNode;
-    }
-
-    struct Node* current = head;
-    while (current->next != NULL && current->next->data < value) {
-        current = current->next;
-    }
-    newNode->next = current->next;
-    current->next = newNode;
-    return head;
+static int arrays_equal(const int *left, const int *right, size_t count)
+{
+    for (size_t i = 0; i < count; ++i)
+        if (left[i] != right[i])
+            return 0;
+    return 1;
 }
 
-int* readArchive(const char* fileName, int* size) {
-    FILE* file = fopen(fileName, "r");
-    if (file == NULL) {
-        perror("Erro ao abrir o arquivo");
-        exit(EXIT_FAILURE);
-    }
-
-    int n;
-    if (fscanf(file, "%d", &n) != 1 || n <= 0) {
-        fprintf(stderr, "Formato invalido: o primeiro valor deve ser o tamanho do array.\n");
-        fclose(file);
-        exit(EXIT_FAILURE);
-    }
-
-    int* arr = malloc((size_t)n * sizeof *arr);
-    
-    if (arr == NULL) {
-        perror("Erro ao alocar memoria");
-        fclose(file);
-        exit(EXIT_FAILURE);
-    }
-
-    for (int i = 0; i < n; i++) {
-        if (fscanf(file, "%d", &arr[i]) != 1) {
-            fprintf(stderr, "Formato invalido: faltou o valor %d de %d.\n", i + 1, n);
-            free(arr);
-            fclose(file);
-            exit(EXIT_FAILURE);
+static void *sort_bucket_range(void *argument)
+{
+    Worker *worker = argument;
+    for (size_t i = 0; i < worker->count; ++i) {
+        size_t index = bucket_index(worker->input[i], worker->minimum,
+                                    worker->range, worker->count);
+        if (index >= worker->first_bucket && index < worker->end_bucket &&
+            insert_sorted(&worker->buckets[index - worker->first_bucket],
+                          worker->input[i]) != 0) {
+            worker->failed = 1;
+            break;
         }
     }
-
-    fclose(file);
-    *size = n;
-    return arr;
+    return NULL;
 }
 
-// Função para juntar os baldes de volta ao array principal
-void mergeBuckets(struct Node* buckets[], int n, int arr[]) {
-    int i, index = 0;
-    for (i = 0; i < n; i++) {
-        struct Node* current = buckets[i];
-        while (current != NULL) {
-            arr[index++] = current->data;
-            struct Node* temp = current;
-            current = current->next;
-            free(temp); // Liberando memória
+static int parse_thread_count(const char *text, size_t *thread_count)
+{
+    if (text && strcmp(text, "max") == 0) {
+        long online = sysconf(_SC_NPROCESSORS_ONLN);
+        if (online < 1) {
+            fprintf(stderr, "Nao foi possivel obter o numero de CPUs online.\n");
+            return -1;
+        }
+        *thread_count = (size_t)online;
+        return 0;
+    }
+
+    if (!text || !*text || *text == '-')
+        return -1;
+    errno = 0;
+    char *end = NULL;
+    unsigned long parsed = strtoul(text, &end, 10);
+    if (errno || *end != '\0' || parsed == 0 || parsed > SIZE_MAX)
+        return -1;
+    *thread_count = (size_t)parsed;
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc > 3) {
+        fprintf(stderr, "Uso: %s [arquivo_entrada] [threads|max]\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    const char *path = argc >= 2 ? argv[1] : "entradas/pequena.txt";
+    const char *thread_arg = argc == 3 ? argv[2] : "max";
+    size_t thread_count = 0, count = 0;
+    if (parse_thread_count(thread_arg, &thread_count) != 0) {
+        fprintf(stderr, "Numero de threads invalido. Use um inteiro positivo ou max.\n");
+        return EXIT_FAILURE;
+    }
+
+    int *values = read_input(path, &count);
+    if (count == SIZE_MAX)
+        return EXIT_FAILURE;
+
+    int *expected = count ? malloc(count * sizeof(*expected)) : NULL;
+    if (count && !expected) {
+        perror("malloc");
+        free(values);
+        return EXIT_FAILURE;
+    }
+    if (count)
+        memcpy(expected, values, count * sizeof(*values));
+    if (bucket_sort(expected, count) != 0) {
+        free(expected);
+        free(values);
+        return EXIT_FAILURE;
+    }
+
+    pthread_t *threads = calloc(thread_count, sizeof(*threads));
+    Worker *workers = calloc(thread_count, sizeof(*workers));
+    if (!threads || !workers) {
+        perror("calloc");
+        free(threads);
+        free(workers);
+        free(expected);
+        free(values);
+        return EXIT_FAILURE;
+    }
+
+    struct timespec start, end;
+    if (clock_gettime(CLOCK_MONOTONIC, &start) != 0) {
+        perror("clock_gettime");
+        free(threads); free(workers); free(expected); free(values);
+        return EXIT_FAILURE;
+    }
+
+    int minimum = 0, maximum = 0;
+    if (count) {
+        minimum = maximum = values[0];
+        for (size_t i = 1; i < count; ++i) {
+            if (values[i] < minimum) minimum = values[i];
+            if (values[i] > maximum) maximum = values[i];
         }
     }
-}
+    uint64_t range = count ? (uint64_t)((int64_t)maximum - (int64_t)minimum) + 1 : 1;
 
-// Função principal do Bucket Sort
-void* bucketSort(void* arg) {
-    // 1. Recupera os dados da struct de forma segura
-    DadosThread* dados = (DadosThread*)arg;
-    int* arr = dados->arr;
-    int n = dados->n_total;
-
-    if (n <= 0) return NULL;
-
-    int max = arr[0];
-    for (int i = 1; i < n; i++) {
-        if (arr[i] > max) max = arr[i];
-    }
-
-    dados->buckets = (struct Node**)calloc(n, sizeof(struct Node*));
-
-    for (int i = 0; i < n; i++) {
-        int bi = (int)(((long long)n * arr[i]) / ((long long)max + 1));
-        
-        // Verifica se este balde pertence ao intervalo desta thread
-        if (bi >= dados->inicio && bi < dados->fim) {
-            dados->buckets[bi] = insertSorted(dados->buckets[bi], arr[i]);
+    size_t created = 0;
+    int failed = 0;
+    for (size_t i = 0; i < thread_count; ++i) {
+        Worker *worker = &workers[i];
+        worker->input = values;
+        worker->count = count;
+        worker->minimum = minimum;
+        worker->range = range;
+        size_t base = count / thread_count;
+        size_t remainder = count % thread_count;
+        worker->first_bucket = base * i + (i < remainder ? i : remainder);
+        worker->end_bucket = worker->first_bucket + base + (i < remainder ? 1 : 0);
+        size_t local_count = worker->end_bucket - worker->first_bucket;
+        worker->buckets = local_count ? calloc(local_count, sizeof(*worker->buckets)) : NULL;
+        if (local_count && !worker->buckets) {
+            perror("calloc");
+            failed = 1;
+            break;
         }
+        int error = pthread_create(&threads[i], NULL, sort_bucket_range, worker);
+        if (error != 0) {
+            fprintf(stderr, "pthread_create: %s\n", strerror(error));
+            failed = 1;
+            break;
+        }
+        ++created;
     }
 
-    return NULL; // Retorno exigido pelo pthread
-}
-
-int main(int argc, char *argv[]) {
-    // Caminho relativo: execute o programa a partir da pasta Aula09-10.
-    const char* fileName = argc > 1 ? argv[1] : "entradas/pequena.txt";
-    int n;
-    int *arr = readArchive(fileName, &n);
-
-    pthread_t threads[NUM_THREADS];
-    DadosThread dados[NUM_THREADS];
-
-    int tamanhoSegmento = n / NUM_THREADS;
-
-    struct timespec inicio, fim;
-
-    clock_gettime(CLOCK_MONOTONIC, &inicio);
-
-    for (int i = 0; i < NUM_THREADS; i++) {
-        dados[i].id = i;
-        dados[i].inicio = i * tamanhoSegmento;
-        dados[i].fim = (i == NUM_THREADS - 1) ? n : (i + 1) * tamanhoSegmento;
-        dados[i].arr = arr;      
-        dados[i].n_total = n;
-
-        pthread_create(&threads[i], NULL, bucketSort, (void*)&dados[i]);
+    for (size_t i = 0; i < created; ++i) {
+        int error = pthread_join(threads[i], NULL);
+        if (error != 0) {
+            fprintf(stderr, "pthread_join: %s\n", strerror(error));
+            failed = 1;
+        }
+        if (workers[i].failed)
+            failed = 1;
     }
 
-    for (int i = 0; i < NUM_THREADS; i++) {
-        pthread_join(threads[i], NULL);
-    }
-
-    int indice_escrita = 0;
-    for (int i = 0; i < NUM_THREADS; i++) {
-        for (int j = dados[i].inicio; j < dados[i].fim; j++) {
-            struct Node* curr = dados[i].buckets[j];
-            while (curr != NULL) {
-                arr[indice_escrita++] = curr->data;
-                struct Node* aux = curr;
-                curr = curr->next;
-                free(aux); 
+    size_t output = 0;
+    if (!failed && created == thread_count) {
+        for (size_t i = 0; i < thread_count; ++i) {
+            size_t local_count = workers[i].end_bucket - workers[i].first_bucket;
+            for (size_t j = 0; j < local_count; ++j) {
+                Node *node = workers[i].buckets[j];
+                while (node) {
+                    values[output++] = node->value;
+                    Node *next = node->next;
+                    free(node);
+                    node = next;
+                }
+                workers[i].buckets[j] = NULL;
             }
         }
-        free(dados[i].buckets);
+        if (output != count) {
+            fprintf(stderr, "Erro: quantidade de valores na saida incorreta.\n");
+            failed = 1;
+        }
     }
-    
-    clock_gettime(CLOCK_MONOTONIC, &fim);
 
-    double tempoTotal = (fim.tv_sec - inicio.tv_sec)
-                    + (fim.tv_nsec - inicio.tv_nsec) / 1e9;
-
-    printf("Array ordenado:\n");
-    for (int i = 0; i < n; i++) {
-        printf("%d \n", arr[i]);
+    if (clock_gettime(CLOCK_MONOTONIC, &end) != 0) {
+        perror("clock_gettime");
+        failed = 1;
     }
-    printf("\n");
-    printf("Tempo de ordenacao: %.6f segundos\n", tempoTotal);
+    if (!failed && !arrays_equal(values, expected, count)) {
+        fprintf(stderr, "Erro: resultado paralelo difere do sequencial.\n");
+        failed = 1;
+    }
+    for (size_t i = 0; i < thread_count; ++i)
+        free_buckets(workers[i].buckets,
+                     workers[i].end_bucket - workers[i].first_bucket);
+    free(workers);
+    free(threads);
 
-    free(arr);
-    return 0;
+    if (failed) {
+        free(expected); free(values);
+        return EXIT_FAILURE;
+    }
+
+    double seconds = (double)(end.tv_sec - start.tv_sec) +
+                     (double)(end.tv_nsec - start.tv_nsec) / 1e9;
+    printf("Threads: %zu\nVerificacao sequencial/paralela: OK\n", thread_count);
+    print_result(values, count, seconds);
+    free(expected);
+    free(values);
+    return EXIT_SUCCESS;
 }

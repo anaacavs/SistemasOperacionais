@@ -1,19 +1,11 @@
 {
     "configurations": [
         {
-            "name": "Linux",
-            "includePath": [
-                "${workspaceFolder}/**",
-                " C:/msys64/ucrt64/bin/../lib/gcc/x86_64-w64-mingw32/16.1.0/../../../../include/c++/16.1.0",
-                " C:/msys64/ucrt64/bin/../lib/gcc/x86_64-w64-mingw32/16.1.0/../../../../include/c++/16.1.0/x86_64-w64-mingw32",
-                " C:/msys64/ucrt64/bin/../lib/gcc/x86_64-w64-mingw32/16.1.0/../../../../include/c++/16.1.0/backward",
-                " C:/msys64/ucrt64/bin/../lib/gcc/x86_64-w64-mingw32/16.1.0/include",
-                " C:/msys64/ucrt64/bin/../lib/gcc/x86_64-w64-mingw32/16.1.0/../../../../include",
-                " C:/msys64/ucrt64/bin/../lib/gcc/x86_64-w64-mingw32/16.1.0/include-fixed"
-            ],
+            "name": "WSL",
+            "includePath": ["${workspaceFolder}/**"],
             "defines": [],
             "compilerPath": "/usr/bin/gcc",
-            "cStandard": "gnu17",
+            "cStandard": "c17",
             "cppStandard": "gnu++17",
             "intelliSenseMode": "linux-gcc-x64"
         }

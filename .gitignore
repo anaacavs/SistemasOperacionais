@@ -1,4 +1,5 @@
 output/
 [!.]*.*
+!Aula09-10/bucket_sort_common.h
 .exe
 .out
