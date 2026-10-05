@@ -3,5 +3,7 @@ output/
 /Aula09-10/thread_bucket_sort
 [!.]*.*
 !Aula09-10/bucket_sort_common.h
+!Aula09-10/benchmark_bucket_sort.py
+!Aula09-10/resultados_bucket_sort.csv
 .exe
 .out

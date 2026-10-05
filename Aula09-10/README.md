@@ -54,6 +54,13 @@ A versão paralela mede também a busca do menor/maior valor, a criação e jun�
 
 Para cada uma das três entradas, execute cada configuração pelo menos três vezes e registre cada tempo individual. Calcule a média e, para cada configuração paralela, `speedup = média_sequencial / média_paralela` e `eficiência = speedup / número_de_threads`. Registre também a quantidade de CPUs lógicas, o compilador, as opções usadas e as características da máquina. Preserve resultados em que aumentar as threads piorar o tempo. Mesmo que `max` seja igual a 2, 4 ou 8, execute e registre essa configuração como o máximo online observado.
 
-Os arquivos `entradas/` devem corresponder às entradas de Bucket Sort do material do professor ou a entradas próprias documentadas com os mesmos tamanhos. Use exatamente o mesmo arquivo nas execuções sequencial e paralela.
+Para repetir automaticamente as 45 medições e gerar o arquivo bruto `resultados_bucket_sort.csv`, execute no WSL, a partir desta pasta:
 
+```bash
+python3 benchmark_bucket_sort.py
+```
+
+O script compila os dois programas com `-O2`, executa cada combinação três vezes, confere a equivalência nas versões pthread e registra o número real de threads criado para a configuração `max`.
+
+Os arquivos `entradas/` devem corresponder às entradas de Bucket Sort do material do professor ou a entradas próprias documentadas com os mesmos tamanhos. Use exatamente o mesmo arquivo nas execuções sequencial e paralela.
 

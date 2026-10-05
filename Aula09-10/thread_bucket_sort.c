@@ -84,16 +84,9 @@ int main(int argc, char **argv)
     if (count == SIZE_MAX)
         return EXIT_FAILURE;
 
-    int *expected = count ? malloc(count * sizeof(*expected)) : NULL;
-    if (count && !expected) {
+    int *sorted = count ? malloc(count * sizeof(*sorted)) : NULL;
+    if (count && !sorted) {
         perror("malloc");
-        free(values);
-        return EXIT_FAILURE;
-    }
-    if (count)
-        memcpy(expected, values, count * sizeof(*values));
-    if (bucket_sort(expected, count) != 0) {
-        free(expected);
         free(values);
         return EXIT_FAILURE;
     }
@@ -104,7 +97,7 @@ int main(int argc, char **argv)
         perror("calloc");
         free(threads);
         free(workers);
-        free(expected);
+        free(sorted);
         free(values);
         return EXIT_FAILURE;
     }
@@ -112,7 +105,7 @@ int main(int argc, char **argv)
     struct timespec start, end;
     if (clock_gettime(CLOCK_MONOTONIC, &start) != 0) {
         perror("clock_gettime");
-        free(threads); free(workers); free(expected); free(values);
+        free(threads); free(workers); free(sorted); free(values);
         return EXIT_FAILURE;
     }
 
@@ -171,7 +164,7 @@ int main(int argc, char **argv)
             for (size_t j = 0; j < local_count; ++j) {
                 Node *node = workers[i].buckets[j];
                 while (node) {
-                    values[output++] = node->value;
+                    sorted[output++] = node->value;
                     Node *next = node->next;
                     free(node);
                     node = next;
@@ -189,10 +182,6 @@ int main(int argc, char **argv)
         perror("clock_gettime");
         failed = 1;
     }
-    if (!failed && !arrays_equal(values, expected, count)) {
-        fprintf(stderr, "Erro: resultado paralelo difere do sequencial.\n");
-        failed = 1;
-    }
     for (size_t i = 0; i < thread_count; ++i)
         free_buckets(workers[i].buckets,
                      workers[i].end_bucket - workers[i].first_bucket);
@@ -200,15 +189,22 @@ int main(int argc, char **argv)
     free(threads);
 
     if (failed) {
-        free(expected); free(values);
+        free(sorted); free(values);
+        return EXIT_FAILURE;
+    }
+
+    /* A validacao sequencial fica depois do cronometro para nao aquecer o cache. */
+    if (bucket_sort(values, count) != 0 || !arrays_equal(sorted, values, count)) {
+        fprintf(stderr, "Erro: resultado paralelo difere do sequencial.\n");
+        free(sorted); free(values);
         return EXIT_FAILURE;
     }
 
     double seconds = (double)(end.tv_sec - start.tv_sec) +
                      (double)(end.tv_nsec - start.tv_nsec) / 1e9;
     printf("Threads: %zu\nVerificacao sequencial/paralela: OK\n", thread_count);
-    print_result(values, count, seconds);
-    free(expected);
+    print_result(sorted, count, seconds);
+    free(sorted);
     free(values);
     return EXIT_SUCCESS;
 }
